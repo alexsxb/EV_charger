@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .const import ALLOWED_CURRENTS, PAUSE_CURRENT_RANGE
+from .const import ALLOWED_CURRENTS
 from .tuya_ev_charger import EVMetrics
 
 
@@ -11,9 +11,8 @@ def allowed_currents(data: EVMetrics | None) -> tuple[int, ...]:
     if data is not None and data.max_current_cfg is not None:
         max_current = min(max_current, data.max_current_cfg)
 
-    preset_options: tuple[int, ...] = tuple(range(min_current, max_current + 1))
     if data is not None and data.adjust_current_options:
-        filtered = tuple(
+        options = tuple(
             sorted(
                 {
                     value
@@ -22,10 +21,7 @@ def allowed_currents(data: EVMetrics | None) -> tuple[int, ...]:
                 }
             )
         )
-        if filtered:
-            preset_options = filtered
+        if options:
+            return options
 
-    # PAUSE_CURRENT_RANGE (0-5A) is always offered in addition to whatever
-    # the device reports/allows above the normal preset floor - it's used to
-    # stop a vehicle auto-starting a charge, not as a "real" charge rate.
-    return tuple(sorted(set(PAUSE_CURRENT_RANGE) | set(preset_options)))
+    return tuple(range(min_current, max_current + 1))
