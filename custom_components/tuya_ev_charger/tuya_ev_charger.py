@@ -292,12 +292,12 @@ class TuyaEVChargerClient:
             schedule_start=_coerce_optional_text(schedule_dict.get("ss")),
             schedule_end=_coerce_optional_text(schedule_dict.get("se")),
             # "d" and "e" are undocumented sub-fields of x_metrics observed on the
-            # depow_v2 firmware: session duration and session energy. Not confirmed
-            # against Tuya's own docs, only reverse engineered from device dumps.
-            # "d" turned out to be scaled x10 just like "t" (530 shown for a real
-            # 53s charge) - divide back down before exposing it as seconds.
+            # depow_v2 firmware: session duration and session energy.
+            # "d" is scaled x10 just like "t" (530 shown for a real 53s charge).
+            # "e" is scaled x10 too, confirmed against a live device dump: e=9
+            # with the app showing 0.9 kWh (an earlier /100 guess was wrong).
             session_duration_s=_scale_optional_int(metrics_dict.get("d"), 10.0),
-            session_energy_kwh=_scale_optional_float(metrics_dict.get("e"), 100.0),
+            session_energy_kwh=_scale_optional_float(metrics_dict.get("e"), 10.0),
         )
 
     async def async_set_schedule(self, enabled: bool, start: str, end: str) -> bool:
