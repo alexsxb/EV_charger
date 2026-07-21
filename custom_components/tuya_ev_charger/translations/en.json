@@ -133,6 +133,11 @@
       "schedule_end": {
         "name": "Schedule end time"
       }
+    },
+    "select": {
+      "charge_current_preset": {
+        "name": "Current setpoint (presets)"
+      }
     }
   }
 }

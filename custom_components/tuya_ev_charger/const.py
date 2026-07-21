@@ -81,6 +81,7 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform.BUTTON,
     Platform.SENSOR,
     Platform.NUMBER,
+    Platform.SELECT,
     Platform.SWITCH,
     Platform.TIME,
 )

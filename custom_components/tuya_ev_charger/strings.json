@@ -119,6 +119,11 @@
       "schedule_end": {
         "name": "Heure de fin de plage"
       }
+    },
+    "select": {
+      "charge_current_preset": {
+        "name": "Consigne d'intensite (presets)"
+      }
     }
   }
 }
