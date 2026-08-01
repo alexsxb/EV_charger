@@ -170,6 +170,25 @@ SENSOR_DESCRIPTIONS: tuple[TuyaEVChargerSensorDescription, ...] = (
         icon="mdi:lightning-bolt",
         value_fn=lambda data: data.session_energy_kwh,
     ),
+    TuyaEVChargerSensorDescription(
+        key="last_session_duration",
+        translation_key="last_session_duration",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        device_class=SensorDeviceClass.DURATION,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:history",
+        value_fn=lambda data: data.last_session_duration_s,
+    ),
+    TuyaEVChargerSensorDescription(
+        key="last_session_energy",
+        translation_key="last_session_energy",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=2,
+        icon="mdi:history",
+        value_fn=lambda data: data.last_session_energy_kwh,
+    ),
 )
 
 

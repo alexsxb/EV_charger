@@ -108,6 +108,12 @@
       },
       "session_energy": {
         "name": "Session energy"
+      },
+      "last_session_duration": {
+        "name": "Last session duration"
+      },
+      "last_session_energy": {
+        "name": "Last session energy"
       }
     },
     "number": {
@@ -138,6 +144,15 @@
       "charge_current_preset": {
         "name": "Current setpoint (presets)"
       }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "charge_started": "{entity_name} started charging",
+      "charge_complete": "{entity_name} finished charging",
+      "fault": "{entity_name} reported a fault",
+      "plugged_in": "A cable was plugged into {entity_name}",
+      "unplugged_while_charging": "{entity_name} was unplugged while charging"
     }
   }
 }

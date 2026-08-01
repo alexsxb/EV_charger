@@ -94,6 +94,12 @@
       },
       "session_energy": {
         "name": "Energie de la session"
+      },
+      "last_session_duration": {
+        "name": "Duree derniere session"
+      },
+      "last_session_energy": {
+        "name": "Energie derniere session"
       }
     },
     "number": {
@@ -124,6 +130,15 @@
       "charge_current_preset": {
         "name": "Consigne d'intensite (presets)"
       }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "charge_started": "{entity_name} a demarre la charge",
+      "charge_complete": "{entity_name} a termine la charge",
+      "fault": "{entity_name} a signale un defaut",
+      "plugged_in": "Un cable a ete branche sur {entity_name}",
+      "unplugged_while_charging": "{entity_name} a ete debranche pendant la charge"
     }
   }
 }

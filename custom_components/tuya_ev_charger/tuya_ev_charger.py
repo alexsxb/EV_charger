@@ -151,6 +151,8 @@ class EVMetrics:
     schedule_end: str | None
     session_duration_s: int | None
     session_energy_kwh: float | None
+    last_session_energy_kwh: float | None
+    last_session_duration_s: int | None
 
 
 class TuyaEVChargerClient:
@@ -264,20 +266,35 @@ class TuyaEVChargerClient:
         metrics_dict = _parse_json_object(dps.get(self._dp.metrics, "{}"))
         charger_info = _parse_json_object(dps.get(self._dp.charger_info, "{}"))
         schedule_dict = _parse_json_object(dps.get(DP_SCHEDULE, "{}"))
-        l1_data = metrics_dict.get("L1", [0, 0, 0])
+        # DP 105 (x_charge_history) is a frozen record of the last *completed*
+        # session - unlike x_metrics' "e"/"d", it survives after the session
+        # ends and the live values reset to 0. Field names ("c" for energy,
+        # "d" for duration in plain seconds) are adopted from an upstream fork
+        # working on the same product; not yet cross-checked against a real
+        # completed session on this specific device.
+        history_dict = _parse_json_object(dps.get(self._dp.charge_history, "{}"))
+
+        work_state_debug = _coerce_optional_text(dps.get(self._dp.work_state_debug)) or "UNKNOWN"
+        work_state_debug = work_state_debug.strip().upper()
+
+        # The charger keeps reporting the last power/current reading even after
+        # a session ends (idle/paused/plugged-in-not-charging), which makes the
+        # power sensor look "stuck" instead of dropping to 0. Only trust L1 while
+        # actually charging.
+        charging = work_state_debug == "WORKING"
+        l1_data = metrics_dict.get("L1", [0, 0, 0]) if charging else [0, 0, 0]
         if not isinstance(l1_data, list) or len(l1_data) < 3:
             l1_data = [0, 0, 0]
 
-        raw_power = l1_data[2] if len(l1_data) > 2 else metrics_dict.get("p", 0)
-        work_state_debug = _coerce_optional_text(dps.get(self._dp.work_state_debug)) or "UNKNOWN"
+        raw_power = l1_data[2] if len(l1_data) > 2 else 0
         return EVMetrics(
             voltage_l1=_coerce_float(l1_data[0]) / 10.0,
             current_l1=_coerce_float(l1_data[1]) / 10.0,
             power_l1=_coerce_float(raw_power) / 10.0,
             temperature=_coerce_float(metrics_dict.get("t", 0)) / 10.0,
             work_state=_coerce_optional_int(dps.get(self._dp.work_state)),
-            work_state_debug=work_state_debug.strip().upper(),
-            status=STATUS_MAP.get(work_state_debug.strip().upper()),
+            work_state_debug=work_state_debug,
+            status=STATUS_MAP.get(work_state_debug),
             do_charge=_coerce_optional_bool(dps.get(self._dp.do_charge)),
             current_target=_coerce_optional_int(dps.get(self._dp.current_target)),
             max_current_cfg=_coerce_optional_int(dps.get(self._dp.max_current_cfg)),
@@ -298,6 +315,8 @@ class TuyaEVChargerClient:
             # with the app showing 0.9 kWh (an earlier /100 guess was wrong).
             session_duration_s=_scale_optional_int(metrics_dict.get("d"), 10.0),
             session_energy_kwh=_scale_optional_float(metrics_dict.get("e"), 10.0),
+            last_session_energy_kwh=_scale_optional_float(history_dict.get("c"), 10.0),
+            last_session_duration_s=_coerce_optional_int(history_dict.get("d")),
         )
 
     async def async_set_schedule(self, enabled: bool, start: str, end: str) -> bool:
