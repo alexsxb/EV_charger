@@ -39,14 +39,11 @@ LOGGER = logging.getLogger(__name__)
 # The charger's relay/status update can lag a plain re-read by a few seconds.
 # 3x0.5s (1.5s total) was too tight and produced false "not reflected" errors
 # even though the charger did apply the change a moment later. 8x1.0s (8s
-# total) is the default for most DPs (current setpoint, NFC, ...).
+# total) covers every DP, do_charge (140) included: the earlier 30 s window
+# for DP 140 was working around poll/command races and bare ACKs read as
+# rejections, both fixed in _async_send_command.
 COMMAND_VERIFY_RETRIES = 8
 COMMAND_VERIFY_DELAY_S = 1.0
-# do_charge (140) toggles the physical relay/contactor - that appears to need
-# noticeably longer than other DPs before the new state shows up in a status
-# read (seen failing even at 8s). Give it a much bigger window.
-DO_CHARGE_VERIFY_RETRIES = 20
-DO_CHARGE_VERIFY_DELAY_S = 1.5
 
 
 @dataclass(slots=True, frozen=True)
@@ -249,12 +246,7 @@ class TuyaEVChargerClient:
         return await self._async_send_command(self._dp.current_target, amperage)
 
     async def async_set_charge_enabled(self, enabled: bool) -> bool:
-        return await self._async_send_command(
-            self._dp.do_charge,
-            enabled,
-            retries=DO_CHARGE_VERIFY_RETRIES,
-            delay_s=DO_CHARGE_VERIFY_DELAY_S,
-        )
+        return await self._async_send_command(self._dp.do_charge, enabled)
 
     async def async_set_nfc_enabled(self, enabled: bool) -> bool:
         return await self._async_send_command(self._dp.nfc_cfg, enabled)

@@ -1,17 +1,23 @@
 {
   "domain": "tuya_ev_charger",
   "name": "Tuya EV Charger Local",
-  "codeowners": ["@lachand"],
+  "codeowners": [
+    "@alexsxb"
+  ],
   "config_flow": true,
   "dhcp": [
     {
       "registered_devices": true
     }
   ],
-  "documentation": "https://github.com/lachand/EV_charger",
+  "documentation": "https://github.com/alexsxb/EV_charger",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/lachand/EV_charger/issues",
-  "loggers": ["tinytuya"],
-  "requirements": ["tinytuya>=1.20.0"],
-  "version": "1.0.6-beta19"
+  "issue_tracker": "https://github.com/alexsxb/EV_charger/issues",
+  "loggers": [
+    "tinytuya"
+  ],
+  "requirements": [
+    "tinytuya>=1.20.0"
+  ],
+  "version": "1.1.0"
 }
