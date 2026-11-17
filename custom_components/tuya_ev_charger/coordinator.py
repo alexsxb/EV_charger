@@ -161,7 +161,7 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         # DP 151 is not in every status reply; without it the schedule is
         # unknown, not "off".
         schedule_known = metrics.schedule_start is not None
-        charging = state == "WORKING" or metrics.do_charge is True
+        charging = metrics.charging or state == "WORKING"
         if charging and schedule_known and not metrics.schedule_enabled:
             # Only a released schedule lets it charge, so this one was asked
             # for - including one running across a Home Assistant restart.

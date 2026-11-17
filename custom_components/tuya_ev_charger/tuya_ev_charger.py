@@ -156,6 +156,9 @@ class EVMetrics:
     work_state: int | None
     work_state_debug: str
     status: str | None
+    # Whether a charge is running, from every signal the charger gives (DP 109,
+    # DP 101, DP 140) - not from DP 109 alone, which this firmware freezes.
+    charging: bool
     do_charge: bool | None
     current_target: int | None
     max_current_cfg: int | None
@@ -341,9 +344,11 @@ class TuyaEVChargerClient:
         work_state_debug = _coerce_optional_text(dps.get(self._dp.work_state_debug)) or "UNKNOWN"
         work_state_debug = work_state_debug.strip().upper()
         work_state = _coerce_optional_int(dps.get(self._dp.work_state))
-        if work_state_debug == "SLEEP" and work_state == WORK_STATE_CODE_CHARGING:
-            # DP 109 frozen while the display is dark: DP 101 says charging.
-            work_state_debug = "WORKING"
+        # DP 109 frozen while the display is dark: DP 101 says charging. Only
+        # SLEEP is overridden - DP 101 moves to 204 as soon as a charge pauses.
+        asleep_but_charging = (
+            work_state_debug == "SLEEP" and work_state == WORK_STATE_CODE_CHARGING
+        )
 
         do_charge = _coerce_optional_bool(dps.get(self._dp.do_charge))
 
@@ -353,7 +358,7 @@ class TuyaEVChargerClient:
         # current/power while actually charging. Voltage stays live: the AC line
         # is still there. A model that reports DP 140 counts as charging when it
         # says so, even if its DP 109 string is not one we map.
-        charging = work_state_debug == "WORKING" or do_charge is True
+        charging = work_state_debug == "WORKING" or do_charge is True or asleep_but_charging
         l1_data = metrics_dict.get("L1", [0, 0, 0])
         if not isinstance(l1_data, list) or len(l1_data) < 3:
             l1_data = [0, 0, 0]
@@ -365,7 +370,10 @@ class TuyaEVChargerClient:
             temperature=_coerce_float(metrics_dict.get("t", 0)) / 10.0,
             work_state=work_state,
             work_state_debug=work_state_debug,
-            status=STATUS_MAP.get(work_state_debug),
+            status=(
+                STATUS_MAP["WORKING"] if asleep_but_charging else STATUS_MAP.get(work_state_debug)
+            ),
+            charging=charging,
             do_charge=do_charge,
             current_target=_coerce_optional_int(dps.get(self._dp.current_target)),
             max_current_cfg=_coerce_optional_int(dps.get(self._dp.max_current_cfg)),
