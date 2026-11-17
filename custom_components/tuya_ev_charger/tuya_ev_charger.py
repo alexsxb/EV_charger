@@ -194,6 +194,11 @@ class TuyaEVChargerClient:
         # that lands mid-poll corrupts the socket and tinytuya returns None,
         # which used to read as "Command rejected for DP 140".
         self._io_lock = asyncio.Lock()
+        # This firmware answers a status request with a varying subset of its
+        # DPs (DP 109, 151, 102 are often missing). Keep the last value of each
+        # one so a reply that leaves a DP out does not read as "unknown" (or,
+        # for DP 109, as "not charging", which zeroes current and power).
+        self._known_dps: dict[str, Any] = {}
 
     @property
     def device_id(self) -> str:
@@ -308,9 +313,11 @@ class TuyaEVChargerClient:
 
     async def async_get_metrics(self) -> EVMetrics | None:
         async with self._io_lock:
-            dps = await self._async_get_dps_payload()
-        if dps is None:
+            reported = await self._async_get_dps_payload()
+        if reported is None:
             return None
+        self._known_dps.update(reported)
+        dps = dict(self._known_dps)
 
         metrics_dict = _parse_json_object(dps.get(self._dp.metrics, "{}"))
         charger_info = _parse_json_object(dps.get(self._dp.charger_info, "{}"))
