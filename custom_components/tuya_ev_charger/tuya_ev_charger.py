@@ -31,6 +31,7 @@ from .const import (
     DP_REBOOT,
     DP_SCHEDULE,
     DP_SELFTEST,
+    DP_SOCKET_CFG,
     DP_WORK_STATE,
     DP_WORK_STATE_DEBUG,
 )
@@ -44,6 +45,26 @@ LOGGER = logging.getLogger(__name__)
 # rejections, both fixed in _async_send_command.
 COMMAND_VERIFY_RETRIES = 8
 COMMAND_VERIFY_DELAY_S = 1.0
+# tinytuya's defaults (5 retries, 5 s apart) let one failed read block for
+# ~35 s, and every poll and command waits on the I/O lock meanwhile. Fail fast
+# instead and let the next poll retry: about 11 s worst case per call.
+SOCKET_TIMEOUT_S = 5
+SOCKET_RETRY_LIMIT = 1
+SOCKET_RETRY_DELAY_S = 1
+# Safety net above tinytuya's own bound. It never fires on a slow-but-working
+# charger; it only exists so a thread stuck inside tinytuya cannot hold the I/O
+# lock, and with it every poll and command, forever.
+IO_TIMEOUT_S = 20
+
+# DP 154 (socket_cfg): what the charger does when a cable is plugged in.
+PLUG_IN_ACTION_MAP: dict[int, str] = {0: "prompt", 1: "charge", 2: "idle"}
+PLUG_IN_ACTION_OPTIONS: tuple[str, ...] = tuple(PLUG_IN_ACTION_MAP.values())
+
+
+def _configure_device(device: tinytuya.Device) -> None:
+    device.set_socketTimeout(SOCKET_TIMEOUT_S)
+    device.set_socketRetryLimit(SOCKET_RETRY_LIMIT)
+    device.set_socketRetryDelay(SOCKET_RETRY_DELAY_S)
 
 
 @dataclass(slots=True, frozen=True)
@@ -64,6 +85,7 @@ class DPProfile:
     product_variant: str
     dp_num: str
     reboot: str
+    plug_in_action: str
 
 
 DP_PROFILE_MAP: dict[str, DPProfile] = {
@@ -84,6 +106,7 @@ DP_PROFILE_MAP: dict[str, DPProfile] = {
         product_variant=DP_PRODUCT_VARIANT,
         dp_num=DP_NUM,
         reboot=DP_REBOOT,
+        plug_in_action=DP_SOCKET_CFG,
     ),
     # Generic profile currently mirrors depow_v2 mappings and is meant as
     # an extension point for additional charger firmwares.
@@ -104,6 +127,7 @@ DP_PROFILE_MAP: dict[str, DPProfile] = {
         product_variant=DP_PRODUCT_VARIANT,
         dp_num=DP_NUM,
         reboot=DP_REBOOT,
+        plug_in_action=DP_SOCKET_CFG,
     ),
 }
 
@@ -137,6 +161,7 @@ class EVMetrics:
     current_target: int | None
     max_current_cfg: int | None
     nfc_enabled: bool | None
+    plug_in_action: str | None
     downcounter: int | None
     selftest: str | None
     alarm: str | None
@@ -193,13 +218,41 @@ class TuyaEVChargerClient:
 
     async def async_connect(self) -> None:
         async with self._io_lock:
-            self._device = tinytuya.Device(
-                dev_id=self._device_id,
-                address=self._host,
-                local_key=self._local_key,
-                version=self._protocol_version,
+            self._device = self._build_device()
+
+    def _build_device(self) -> tinytuya.Device:
+        device = tinytuya.Device(
+            dev_id=self._device_id,
+            address=self._host,
+            local_key=self._local_key,
+            version=self._protocol_version,
+        )
+        _configure_device(device)
+        return device
+
+    async def _async_in_thread(self, func: Any, *args: Any) -> Any:
+        """Run a blocking tinytuya call off the loop, bounded by ``IO_TIMEOUT_S``.
+
+        Must be called with ``self._io_lock`` held. A thread cannot be cancelled,
+        so on a timeout the call is still running against the socket. The charger
+        accepts a single local connection, so that socket is closed here, before
+        the lock is released, and replaced by a fresh client: the stuck call then
+        fails fast instead of racing the next one.
+        """
+        try:
+            async with asyncio.timeout(IO_TIMEOUT_S):
+                return await asyncio.to_thread(func, *args)
+        except TimeoutError:
+            LOGGER.warning(
+                "Charger I/O did not finish within %ss; dropping the connection.", IO_TIMEOUT_S
             )
-            self._device.set_socketTimeout(5)
+            stuck, self._device = self._device, self._build_device()
+            if stuck is not None:
+                try:
+                    await asyncio.to_thread(stuck.close)
+                except OSError as err:
+                    LOGGER.debug("Closing the stuck connection failed: %s", err)
+            raise
 
     async def async_update_host(self, host: str) -> None:
         """Point the client at a new IP (after a DHCP change) and reconnect."""
@@ -224,7 +277,7 @@ class TuyaEVChargerClient:
                     local_key=self._local_key,
                     version=self._protocol_version,
                 )
-                device.set_socketTimeout(5)
+                _configure_device(device)
                 payload: Any = device.status()
             except Exception:  # noqa: BLE001 - probing is best-effort
                 return False
@@ -235,7 +288,11 @@ class TuyaEVChargerClient:
                 and bool(payload["dps"])
             )
 
-        return await asyncio.to_thread(_probe)
+        try:
+            async with asyncio.timeout(IO_TIMEOUT_S):
+                return await asyncio.to_thread(_probe)
+        except TimeoutError:
+            return False
 
     async def async_set_charge_current(self, amperage: int) -> bool:
         if amperage < min(ALLOWED_CURRENTS) or amperage > max(ALLOWED_CURRENTS):
@@ -247,6 +304,17 @@ class TuyaEVChargerClient:
 
     async def async_set_charge_enabled(self, enabled: bool) -> bool:
         return await self._async_send_command(self._dp.do_charge, enabled)
+
+    async def async_set_plug_in_action(self, action: str) -> bool:
+        """Choose what the charger does when a cable is plugged in.
+
+        "idle" stops the car auto-starting a charge; the session is then
+        started on demand (switch.charge_session or the schedule).
+        """
+        for raw_value, name in PLUG_IN_ACTION_MAP.items():
+            if name == action:
+                return await self._async_send_command(self._dp.plug_in_action, raw_value)
+        raise ValueError(f"Unsupported plug-in action '{action}'.")
 
     async def async_set_nfc_enabled(self, enabled: bool) -> bool:
         return await self._async_send_command(self._dp.nfc_cfg, enabled)
@@ -303,6 +371,9 @@ class TuyaEVChargerClient:
             current_target=_coerce_optional_int(dps.get(self._dp.current_target)),
             max_current_cfg=_coerce_optional_int(dps.get(self._dp.max_current_cfg)),
             nfc_enabled=_coerce_optional_bool(dps.get(self._dp.nfc_cfg)),
+            plug_in_action=PLUG_IN_ACTION_MAP.get(
+                _coerce_optional_int(dps.get(self._dp.plug_in_action))
+            ),
             downcounter=_coerce_optional_int(dps.get(self._dp.downcounter)),
             selftest=_coerce_optional_text(dps.get(self._dp.selftest)),
             alarm=_coerce_optional_json_text(dps.get(self._dp.alarm)),
@@ -358,7 +429,12 @@ class TuyaEVChargerClient:
         """
         async with self._io_lock:
             device = self._get_device()
-            response: Any = await asyncio.to_thread(device.set_value, dp_id, value)
+            try:
+                response: Any = await self._async_in_thread(device.set_value, dp_id, value)
+            except TimeoutError:
+                # The write may still have reached the charger; let the
+                # read-back decide.
+                response = None
 
             if isinstance(response, dict) and "Error" in response:
                 LOGGER.warning("Command to DP %s failed: %s", dp_id, response["Error"])
@@ -430,7 +506,10 @@ class TuyaEVChargerClient:
     async def _async_get_dps_payload(self) -> dict[str, Any] | None:
         """Read the charger's DPS. Must be called with ``self._io_lock`` held."""
         device = self._get_device()
-        payload: Any = await asyncio.to_thread(device.status)
+        try:
+            payload: Any = await self._async_in_thread(device.status)
+        except TimeoutError:
+            return None
 
         if not isinstance(payload, dict):
             LOGGER.error("Invalid status payload type: %s", type(payload).__name__)

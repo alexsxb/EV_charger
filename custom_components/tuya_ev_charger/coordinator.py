@@ -44,6 +44,15 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         if metrics is not None:
             return metrics
 
+        # A session the charger has wedged (same IP, same key) only clears with
+        # a fresh client - a reload used to be the only cure. Rebuild once and
+        # retry before assuming the charger moved.
+        LOGGER.debug("Charger poll failed; rebuilding the connection and retrying once.")
+        await self.client.async_connect()
+        metrics = await self._async_fetch_metrics()
+        if metrics is not None:
+            return metrics
+
         # Communication failed: after a power cycle the charger's DHCP IP may
         # have changed. Relocate it (scan + live read) and retry once before failing.
         if await self._async_try_rediscover_host():

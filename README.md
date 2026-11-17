@@ -50,6 +50,7 @@ Notes:
 - `switch`: charging session, NFC, scheduled charging
 - `number`: current setpoint
 - `select`: current setpoint (presets, only values the charger accepts)
+- `select`: plug-in action (what the charger does when a cable is plugged in)
 - `time`: schedule start / end
 - `sensor`: voltage, current and power (L1), temperature, status, work state,
   session duration / energy, last session duration / energy, plus diagnostics
@@ -58,6 +59,15 @@ Notes:
 
 L1 current and power read 0 whenever the charger is not charging (some
 firmwares keep echoing the last value); voltage stays live.
+
+## Stop auto-charging on plug-in
+
+By default the charger starts charging as soon as a car is plugged in. Set
+`select.plug_in_action` to **Do nothing** and it waits instead; start the
+session with `switch.charge_session` (manually or from an automation) or with
+the charging schedule. The setting is stored on the charger itself, so it also
+holds while Home Assistant is offline. The select is unavailable on firmwares
+that do not report DP 154.
 
 ## Device triggers
 
