@@ -36,6 +36,13 @@ from .const import (
 )
 
 LOGGER = logging.getLogger(__name__)
+# DP 101 reads 300 while charging (200 ready, 204 paused). Once its display
+# goes dark the charger freezes DP 109 on SLEEP - for hours, through a whole
+# charge - while DP 101 keeps tracking the real state (upstream #57).
+WORK_STATE_CODE_CHARGING = 300
+# DP 106 "cp": the IEC 61851 control-pilot voltage. 12 V = no vehicle (A),
+# 9 V = vehicle connected (B), 6 V = charging (C).
+PILOT_NO_VEHICLE_MIN_V = 11.0
 # The charger's relay/status update can lag a plain re-read by a few seconds.
 # 3x0.5s (1.5s total) was too tight and produced false "not reflected" errors
 # even though the charger did apply the change a moment later. 8x1.0s (8s
@@ -159,6 +166,7 @@ class EVMetrics:
     adjust_current_options: tuple[int, ...] | None
     product_variant: int | None
     charger_info: dict[str, Any]
+    pilot_voltage: float | None
     schedule_enabled: bool
     schedule_start: str | None
     schedule_end: str | None
@@ -332,6 +340,10 @@ class TuyaEVChargerClient:
 
         work_state_debug = _coerce_optional_text(dps.get(self._dp.work_state_debug)) or "UNKNOWN"
         work_state_debug = work_state_debug.strip().upper()
+        work_state = _coerce_optional_int(dps.get(self._dp.work_state))
+        if work_state_debug == "SLEEP" and work_state == WORK_STATE_CODE_CHARGING:
+            # DP 109 frozen while the display is dark: DP 101 says charging.
+            work_state_debug = "WORKING"
 
         do_charge = _coerce_optional_bool(dps.get(self._dp.do_charge))
 
@@ -351,7 +363,7 @@ class TuyaEVChargerClient:
             current_l1=_coerce_float(l1_data[1]) / 10.0 if charging else 0.0,
             power_l1=_coerce_float(l1_data[2]) / 10.0 if charging else 0.0,
             temperature=_coerce_float(metrics_dict.get("t", 0)) / 10.0,
-            work_state=_coerce_optional_int(dps.get(self._dp.work_state)),
+            work_state=work_state,
             work_state_debug=work_state_debug,
             status=STATUS_MAP.get(work_state_debug),
             do_charge=do_charge,
@@ -364,6 +376,7 @@ class TuyaEVChargerClient:
             adjust_current_options=_parse_int_list(dps.get(self._dp.adjust_current)),
             product_variant=_coerce_optional_int(dps.get(self._dp.product_variant)),
             charger_info=charger_info,
+            pilot_voltage=_coerce_optional_float(charger_info.get("cp")),
             schedule_enabled=schedule_dict.get("m", 0) == 2,
             schedule_start=_coerce_optional_text(schedule_dict.get("ss")),
             schedule_end=_coerce_optional_text(schedule_dict.get("se")),
