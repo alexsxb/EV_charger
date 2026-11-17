@@ -47,10 +47,9 @@ Notes:
 
 ## Exposed entities
 
-- `switch`: charging session, NFC, scheduled charging
+- `switch`: charging session, NFC, scheduled charging, auto-start lock
 - `number`: current setpoint
 - `select`: current setpoint (presets, only values the charger accepts)
-- `select`: plug-in action (what the charger does when a cable is plugged in)
 - `time`: schedule start / end
 - `sensor`: voltage, current and power (L1), temperature, status, work state,
   session duration / energy, last session duration / energy, plus diagnostics
@@ -60,14 +59,21 @@ Notes:
 L1 current and power read 0 whenever the charger is not charging (some
 firmwares keep echoing the last value); voltage stays live.
 
-## Stop auto-charging on plug-in
+## Auto-start lock
 
-By default the charger starts charging as soon as a car is plugged in. Set
-`select.plug_in_action` to **Do nothing** and it waits instead; start the
-session with `switch.charge_session` (manually or from an automation) or with
-the charging schedule. The setting is stored on the charger itself, so it also
-holds while Home Assistant is offline. The select is unavailable on firmwares
-that do not report DP 154.
+The charger starts charging as soon as a car is plugged in, and its firmware
+ignores the settings meant to change that (DP 154 `x_socket_cfg`, DP 190
+`x_plug_charge` - tested on firmware 1.9.7). With `switch.autostart_lock` on,
+the integration stops any charge nobody asked for. Starts are let through when
+they come from:
+
+- `switch.charge_session` (manually or from an automation), until the car is
+  unplugged
+- the charger's own schedule, inside its time window
+
+Limits: the lock only acts while Home Assistant is running, and the charger
+may charge for a few seconds before it is stopped (polling runs every 10 s at
+most while the lock is on). A start from the Smart Life app is stopped too.
 
 ## Device triggers
 

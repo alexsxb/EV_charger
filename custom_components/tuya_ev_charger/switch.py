@@ -8,6 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import TuyaEVChargerRuntimeData
 from .const import (
@@ -37,6 +38,7 @@ async def async_setup_entry(
             TuyaEVChargerChargeSessionSwitch(entry, runtime_data),
             TuyaEVChargerNfcSwitch(entry, runtime_data),
             TuyaEVChargerScheduleSwitch(entry, runtime_data),
+            TuyaEVChargerAutostartLockSwitch(entry, runtime_data),
         ]
     )
 
@@ -89,6 +91,9 @@ class TuyaEVChargerChargeSessionSwitch(TuyaEVChargerEntity, SwitchEntity):
         await self._async_set_charging(False)
 
     async def _async_set_charging(self, enabled: bool) -> None:
+        # Before the command, so a poll landing in between does not take this
+        # start for one the car made by itself.
+        self.coordinator.request_charge(enabled)
         if not await self._runtime_data.client.async_set_charge_enabled(enabled):
             raise HomeAssistantError(
                 "Unable to start charging session."
@@ -158,3 +163,46 @@ class TuyaEVChargerScheduleSwitch(TuyaEVChargerEntity, SwitchEntity):
         if not await self._runtime_data.client.async_set_schedule(enabled, start, end):
             raise HomeAssistantError("Unable to update charging schedule.")
         await self.coordinator.async_request_refresh()
+
+
+class TuyaEVChargerAutostartLockSwitch(TuyaEVChargerEntity, SwitchEntity, RestoreEntity):
+    """Stop the charger from charging on its own when a car is plugged in.
+
+    The charger starts a session on plug-in and its firmware ignores the DPs
+    meant to change that, so the lock stops any charge nobody asked for. A
+    start through switch.charge_session (manual or automation) or inside the
+    charger's own schedule window is let through. Only acts while Home
+    Assistant is running; the charger may charge for one poll before it stops.
+    """
+
+    _attr_translation_key = "autostart_lock"
+    _attr_icon = "mdi:lock-clock"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, entry: ConfigEntry, runtime_data: TuyaEVChargerRuntimeData) -> None:
+        super().__init__(entry=entry, runtime_data=runtime_data)
+        self._attr_unique_id = f"{runtime_data.client.device_id}_autostart_lock"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None:
+            self.coordinator.set_autostart_locked(last_state.state == "on")
+
+    @property
+    def available(self) -> bool:
+        # A setting of this integration, not of the charger: always settable.
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.autostart_locked
+
+    async def async_turn_on(self, **kwargs: object) -> None:
+        self.coordinator.set_autostart_locked(True)
+        self.async_write_ha_state()
+        await self.coordinator.async_request_refresh()
+
+    async def async_turn_off(self, **kwargs: object) -> None:
+        self.coordinator.set_autostart_locked(False)
+        self.async_write_ha_state()

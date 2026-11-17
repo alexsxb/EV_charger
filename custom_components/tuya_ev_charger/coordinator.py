@@ -6,6 +6,7 @@ from datetime import timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_DEVICE_ID,
@@ -18,6 +19,13 @@ from .discovery import async_scan_devices_by_id
 from .tuya_ev_charger import EVMetrics, TuyaEVChargerClient
 
 LOGGER = logging.getLogger(__name__)
+
+# While the auto-start lock is on, poll at least this often so a charge the car
+# started by itself on plug-in is caught (and stopped) within seconds.
+AUTOSTART_LOCK_POLL_INTERVAL = timedelta(seconds=10)
+# Raw DP 109 states that mean no car is connected: a later plug-in starts a new
+# session, so any earlier start request no longer applies.
+_NO_VEHICLE_STATES = frozenset({"SLEEP", "IDLE"})
 
 
 class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
@@ -38,8 +46,55 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         self.entry = entry
         self.last_discovery: dict | None = None
         self._last_rediscovery_at: float = 0.0
+        self._base_update_interval = update_interval
+        # Auto-start lock: the charger has no working setting to stay idle on
+        # plug-in, so a charge nobody asked for is stopped here instead.
+        self.autostart_locked = False
+        self._charge_requested = False
+
+    def set_autostart_locked(self, locked: bool) -> None:
+        self.autostart_locked = locked
+        self.update_interval = (
+            min(self._base_update_interval, AUTOSTART_LOCK_POLL_INTERVAL)
+            if locked
+            else self._base_update_interval
+        )
+
+    def request_charge(self, requested: bool) -> None:
+        """Record that a session was started (or stopped) on purpose.
+
+        Called by switch.charge_session before it sends the command, so the
+        lock never stops a charge the user or an automation asked for.
+        """
+        self._charge_requested = requested
 
     async def _async_update_data(self) -> EVMetrics:
+        metrics = await self._async_poll()
+        if metrics is not None:
+            return await self._async_enforce_autostart_lock(metrics)
+        raise UpdateFailed(
+            f"Charger unreachable at {self.client.host} (no telemetry received)."
+        )
+
+    async def _async_enforce_autostart_lock(self, metrics: EVMetrics) -> EVMetrics:
+        """Stop a charge the car started on its own while the lock is on."""
+        if metrics.work_state_debug in _NO_VEHICLE_STATES:
+            self._charge_requested = False
+        if not self.autostart_locked or self._charge_requested:
+            return metrics
+        charging = metrics.work_state_debug == "WORKING" or metrics.do_charge is True
+        if not charging or _in_schedule_window(metrics):
+            return metrics
+
+        LOGGER.info(
+            "Charge started without a request while the auto-start lock is on; stopping it."
+        )
+        if not await self.client.async_set_charge_enabled(False):
+            LOGGER.warning("Auto-start lock could not stop the charge; retrying on the next poll.")
+            return metrics
+        return await self._async_fetch_metrics() or metrics
+
+    async def _async_poll(self) -> EVMetrics | None:
         metrics = await self._async_fetch_metrics()
         if metrics is not None:
             return metrics
@@ -56,13 +111,8 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         # Communication failed: after a power cycle the charger's DHCP IP may
         # have changed. Relocate it (scan + live read) and retry once before failing.
         if await self._async_try_rediscover_host():
-            metrics = await self._async_fetch_metrics()
-            if metrics is not None:
-                return metrics
-
-        raise UpdateFailed(
-            f"Charger unreachable at {self.client.host} (no telemetry received)."
-        )
+            return await self._async_fetch_metrics()
+        return None
 
     async def _async_fetch_metrics(self) -> EVMetrics | None:
         try:
@@ -142,3 +192,27 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
             if str(info.get("ip", "")).strip() == host:
                 return info
         return {"ip": host}
+
+
+def _in_schedule_window(metrics: EVMetrics) -> bool:
+    """Whether the charger's own schedule (DP 151) is active right now.
+
+    A charge inside the window is one the user set up, so the lock lets it run.
+    """
+    if not metrics.schedule_enabled or not metrics.schedule_start or not metrics.schedule_end:
+        return False
+    try:
+        start = _minutes(metrics.schedule_start)
+        end = _minutes(metrics.schedule_end)
+    except ValueError:
+        return False
+    now = dt_util.now()
+    current = now.hour * 60 + now.minute
+    if start <= end:
+        return start <= current < end
+    return current >= start or current < end  # window across midnight
+
+
+def _minutes(hhmm: str) -> int:
+    hours, minutes = hhmm.split(":")
+    return int(hours) * 60 + int(minutes)
