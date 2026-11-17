@@ -143,6 +143,14 @@
     "select": {
       "charge_current_preset": {
         "name": "Current setpoint (presets)"
+      },
+      "plug_in_action": {
+        "name": "Plug-in action",
+        "state": {
+          "prompt": "Prompt",
+          "charge": "Start charging",
+          "idle": "Do nothing"
+        }
       }
     }
   },

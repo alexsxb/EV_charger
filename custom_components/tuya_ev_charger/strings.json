@@ -129,6 +129,14 @@
     "select": {
       "charge_current_preset": {
         "name": "Consigne d'intensite (presets)"
+      },
+      "plug_in_action": {
+        "name": "Action au branchement",
+        "state": {
+          "prompt": "Demander",
+          "charge": "Demarrer la charge",
+          "idle": "Ne rien faire"
+        }
       }
     }
   },
