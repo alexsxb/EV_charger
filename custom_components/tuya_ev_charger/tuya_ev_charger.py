@@ -363,10 +363,14 @@ class TuyaEVChargerClient:
         if not isinstance(l1_data, list) or len(l1_data) < 3:
             l1_data = [0, 0, 0]
 
+        voltage_l1 = _coerce_float(l1_data[0]) / 10.0
+        current_l1 = _coerce_float(l1_data[1]) / 10.0 if charging else 0.0
         return EVMetrics(
-            voltage_l1=_coerce_float(l1_data[0]) / 10.0,
-            current_l1=_coerce_float(l1_data[1]) / 10.0 if charging else 0.0,
-            power_l1=_coerce_float(l1_data[2]) / 10.0 if charging else 0.0,
+            voltage_l1=voltage_l1,
+            current_l1=current_l1,
+            # Computed as V x I (kW), as upstream: the charger's own figure
+            # (L1[2]) only comes in 0.1 kW steps, e.g. 1.5 for a real 1.56 kW.
+            power_l1=round(voltage_l1 * current_l1 / 1000.0, 3),
             temperature=_coerce_float(metrics_dict.get("t", 0)) / 10.0,
             work_state=work_state,
             work_state_debug=work_state_debug,
