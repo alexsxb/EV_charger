@@ -17,7 +17,7 @@ from .const import (
     REDISCOVERY_SCAN_SECONDS,
 )
 from .discovery import async_scan_devices_by_id
-from .tuya_ev_charger import EVMetrics, TuyaEVChargerClient
+from .tuya_ev_charger import PILOT_NO_VEHICLE_MIN_V, EVMetrics, TuyaEVChargerClient
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,9 +34,9 @@ DEAD_WINDOW_MARGIN = timedelta(hours=6)
 # lock makes on its own (not on a user action) are spaced at least this far
 # apart, so a read-back it does not understand can never turn into a loop.
 AUTO_WRITE_MIN_INTERVAL_S = 15 * 60
-# DP 109 reads SLEEP with no car connected. Only after this many polls in a
-# row is the car taken as unplugged (which ends a requested session), so a
-# state the charger passes through briefly while starting cannot end it.
+# Only after this many polls in a row without a vehicle is the car taken as
+# unplugged (which ends a requested session), so a state the charger passes
+# through briefly cannot end it.
 UNPLUGGED_CONFIRM_POLLS = 3
 
 
@@ -73,7 +73,7 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         # writing (and the charger beeping).
         self._parked_rechecked = False
         self._last_auto_write = float("-inf")
-        self._sleep_polls = 0
+        self._unplugged_polls = 0
         self._last_work_state = "UNKNOWN"
 
     def restore_autostart_lock(self, locked: bool) -> None:
@@ -152,8 +152,8 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         if metrics.work_state_debug != "UNKNOWN":
             self._last_work_state = metrics.work_state_debug
         state = self._last_work_state
-        self._sleep_polls = self._sleep_polls + 1 if state == "SLEEP" else 0
-        if self._sleep_polls >= UNPLUGGED_CONFIRM_POLLS:
+        self._unplugged_polls = self._unplugged_polls + 1 if _no_vehicle(metrics, state) else 0
+        if self._unplugged_polls >= UNPLUGGED_CONFIRM_POLLS:
             self._charge_requested = False
         if not self.autostart_locked:
             return metrics
@@ -161,7 +161,7 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         # DP 151 is not in every status reply; without it the schedule is
         # unknown, not "off".
         schedule_known = metrics.schedule_start is not None
-        charging = state == "WORKING" or metrics.do_charge is True
+        charging = metrics.charging or state == "WORKING"
         if charging and schedule_known and not metrics.schedule_enabled:
             # Only a released schedule lets it charge, so this one was asked
             # for - including one running across a Home Assistant restart.
@@ -340,3 +340,15 @@ def _minutes(hhmm: str) -> int:
 
 def _hhmm(moment: datetime) -> str:
     return f"{moment.hour:02d}:{moment.minute:02d}"
+
+
+def _no_vehicle(metrics: EVMetrics, state: str) -> bool:
+    """Whether no car is connected.
+
+    The control-pilot voltage (DP 106 "cp") says so directly. DP 109 SLEEP is
+    only a fallback: this charger freezes it on SLEEP once its display goes
+    dark, even with a car plugged in and charging.
+    """
+    if metrics.pilot_voltage is not None:
+        return metrics.pilot_voltage >= PILOT_NO_VEHICLE_MIN_V
+    return state == "SLEEP"

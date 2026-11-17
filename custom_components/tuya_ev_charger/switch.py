@@ -65,7 +65,7 @@ class TuyaEVChargerChargeSessionSwitch(TuyaEVChargerEntity, SwitchEntity):
             return None
         if data.do_charge is not None:
             return data.do_charge
-        return data.work_state_debug == "WORKING"
+        return data.charging
 
     @property
     def is_on(self) -> bool:
