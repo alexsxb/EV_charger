@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from time import monotonic
 from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -29,9 +30,14 @@ AUTOSTART_LOCK_POLL_INTERVAL = timedelta(seconds=10)
 # match Home Assistant's (time zone, DST).
 DEAD_WINDOW_AHEAD = timedelta(hours=12)
 DEAD_WINDOW_MARGIN = timedelta(hours=6)
-# Raw DP 109 states that mean no car is connected: a later plug-in starts a new
-# session, so any earlier start request no longer applies.
-_NO_VEHICLE_STATES = frozenset({"SLEEP", "IDLE"})
+# Every DP write makes the charger beep, even when nothing changes. Writes the
+# lock makes on its own (not on a user action) are spaced at least this far
+# apart, so a read-back it does not understand can never turn into a loop.
+AUTO_WRITE_MIN_INTERVAL_S = 15 * 60
+# DP 109 reads SLEEP with no car connected. Only after this many polls in a
+# row is the car taken as unplugged (which ends a requested session), so a
+# state the charger passes through briefly while starting cannot end it.
+UNPLUGGED_CONFIRM_POLLS = 3
 
 
 class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
@@ -58,6 +64,17 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         # on request once scheduled mode is switched off.
         self.autostart_locked = False
         self._charge_requested = False
+        # Start of the dead window the lock last wrote (local time), or None
+        # when it has not parked the charger since startup / being switched on.
+        self._parked_start: datetime | None = None
+        # Whether the current parked window was already re-written once because
+        # the read-back did not match it; after that the lock trusts its own
+        # record, so a firmware reporting DP 151 differently cannot keep it
+        # writing (and the charger beeping).
+        self._parked_rechecked = False
+        self._last_auto_write = float("-inf")
+        self._sleep_polls = 0
+        self._last_work_state = "UNKNOWN"
 
     def restore_autostart_lock(self, locked: bool) -> None:
         """Set the lock from the restored switch state, without touching the charger."""
@@ -70,8 +87,12 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         self.autostart_locked = locked
         self._apply_poll_interval()
         self.async_update_listeners()
-        if not locked:
+        if locked:
+            if not self._charge_requested:
+                await self._async_arm_dead_window()
+        else:
             # Back to the charger's default: charge as soon as a car is plugged in.
+            self._parked_start = None
             await self._async_set_schedule_enabled(False)
 
     def _apply_poll_interval(self) -> None:
@@ -93,6 +114,7 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         if enabled and self.autostart_locked:
             if not await self._async_set_schedule_enabled(False):
                 return False
+            self._parked_start = None
         ok = await self.client.async_set_charge_enabled(enabled)
         if not enabled and self.autostart_locked:
             ok = await self._async_arm_dead_window() or ok
@@ -108,7 +130,12 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         start = dt_util.now() + DEAD_WINDOW_AHEAD
         end = start + timedelta(minutes=1)
         LOGGER.debug("Auto-start lock: parking the schedule at %s.", _hhmm(start))
-        return await self.client.async_set_schedule(True, _hhmm(start), _hhmm(end))
+        self._last_auto_write = monotonic()
+        if not await self.client.async_set_schedule(True, _hhmm(start), _hhmm(end)):
+            return False
+        self._parked_start = start
+        self._parked_rechecked = False
+        return True
 
     async def _async_update_data(self) -> EVMetrics:
         metrics = await self._async_poll()
@@ -120,29 +147,75 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
 
     async def _async_enforce_autostart_lock(self, metrics: EVMetrics) -> EVMetrics:
         """Keep the charger parked in scheduled mode while the lock is on."""
-        if metrics.work_state_debug in _NO_VEHICLE_STATES:
+        # DP 109 is not in every status reply either: go by the last state the
+        # charger did report.
+        if metrics.work_state_debug != "UNKNOWN":
+            self._last_work_state = metrics.work_state_debug
+        state = self._last_work_state
+        self._sleep_polls = self._sleep_polls + 1 if state == "SLEEP" else 0
+        if self._sleep_polls >= UNPLUGGED_CONFIRM_POLLS:
             self._charge_requested = False
         if not self.autostart_locked:
             return metrics
-        charging = metrics.work_state_debug == "WORKING" or metrics.do_charge is True
-        if charging and not metrics.schedule_enabled:
+
+        # DP 151 is not in every status reply; without it the schedule is
+        # unknown, not "off".
+        schedule_known = metrics.schedule_start is not None
+        charging = state == "WORKING" or metrics.do_charge is True
+        if charging and schedule_known and not metrics.schedule_enabled:
             # Only a released schedule lets it charge, so this one was asked
             # for - including one running across a Home Assistant restart.
             self._charge_requested = True
         if self._charge_requested:
             return metrics
+        if monotonic() - self._last_auto_write < AUTO_WRITE_MIN_INTERVAL_S:
+            return metrics
 
-        if charging:
+        if charging and schedule_known and metrics.schedule_enabled:
             # Parked but charging anyway (e.g. the window came round while Home
             # Assistant was down): stop it and park again.
             LOGGER.info("Charge started while the auto-start lock is on; stopping it.")
             await self.client.async_set_charge_enabled(False)
             await self._async_arm_dead_window()
-        elif _dead_window_needs_moving(metrics):
+        elif reason := self._parking_reason(metrics, schedule_known):
             await self._async_arm_dead_window()
+            if reason == "mismatch":
+                # The re-written window keeps its one retry used.
+                self._parked_rechecked = True
         else:
             return metrics
         return await self._async_fetch_metrics() or metrics
+
+    def _parking_reason(self, metrics: EVMetrics, schedule_known: bool) -> str | None:
+        """Why the charger needs (re-)parking now, or None."""
+        now = dt_util.now()
+        if self._parked_start is None:
+            if not schedule_known:
+                return None
+            # After a restart: adopt a dead window already on the charger.
+            start = _parked_window_start(metrics, now)
+            if start is not None and start - now >= DEAD_WINDOW_MARGIN:
+                self._parked_start = start
+                return None
+            return "not parked"
+        if self._parked_start - now < DEAD_WINDOW_MARGIN:
+            return "window close"
+        if (
+            schedule_known
+            and not self._parked_rechecked
+            and _parked_window_start(metrics, now) is None
+        ):
+            self._parked_rechecked = True
+            LOGGER.warning(
+                "Auto-start lock: the charger reports schedule %s/%s-%s instead of the "
+                "parked window %s; parking again.",
+                "on" if metrics.schedule_enabled else "off",
+                metrics.schedule_start,
+                metrics.schedule_end,
+                _hhmm(self._parked_start),
+            )
+            return "mismatch"
+        return None
 
     async def _async_poll(self) -> EVMetrics | None:
         metrics = await self._async_fetch_metrics()
@@ -245,21 +318,20 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
 
 
 
-def _dead_window_needs_moving(metrics: EVMetrics) -> bool:
-    """Whether the schedule is off, not ours, or the window is getting close."""
+
+def _parked_window_start(metrics: EVMetrics, now: datetime) -> datetime | None:
+    """Next start of the charger's schedule if it is a parked one-minute window."""
     if not metrics.schedule_enabled or not metrics.schedule_start or not metrics.schedule_end:
-        return True
+        return None
     try:
         start = _minutes(metrics.schedule_start)
         end = _minutes(metrics.schedule_end)
     except ValueError:
-        return True
+        return None
     if (end - start) % (24 * 60) != 1:
-        return True
-    now = dt_util.now()
+        return None
     until_start = (start - (now.hour * 60 + now.minute)) % (24 * 60)
-    return until_start < DEAD_WINDOW_MARGIN.total_seconds() / 60
-
+    return now.replace(second=0, microsecond=0) + timedelta(minutes=until_start)
 
 def _minutes(hhmm: str) -> int:
     hours, minutes = hhmm.split(":")
