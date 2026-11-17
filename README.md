@@ -63,17 +63,25 @@ firmwares keep echoing the last value); voltage stays live.
 
 The charger starts charging as soon as a car is plugged in, and its firmware
 ignores the settings meant to change that (DP 154 `x_socket_cfg`, DP 190
-`x_plug_charge` - tested on firmware 1.9.7). With `switch.autostart_lock` on,
-the integration stops any charge nobody asked for. Starts are let through when
-they come from:
+`x_plug_charge` - tested on firmware 1.9.7). It does, however, wait for its
+own schedule: in scheduled mode it only charges inside the window, and a
+manual start does not override that.
 
-- `switch.charge_session` (manually or from an automation), until the car is
-  unplugged
-- the charger's own schedule, inside its time window
+`switch.autostart_lock` uses this. While on:
 
-Limits: the lock only acts while Home Assistant is running, and the charger
-may charge for a few seconds before it is stopped (polling runs every 10 s at
-most while the lock is on). A start from the Smart Life app is stopped too.
+- the charger is parked in scheduled mode with a one-minute window about 12 h
+  ahead, moved again once it gets closer than 6 h - so it never comes round
+- `switch.charge_session` on switches scheduled mode off, and the charger
+  starts; off (or unplugging the car) parks it again
+- the schedule entities (`switch.scheduled_charging`, schedule start/end) are
+  managed by the lock; time-based charging belongs in Home Assistant (e.g. a
+  scheduler driving `switch.charge_session`)
+
+Because the charger enforces the schedule itself, the lock also holds while
+Home Assistant is down (the window is only moved while it runs; if it is down
+for more than ~6 h the charger may charge for one minute when the window comes
+round). Turning the lock off switches scheduled mode off: a car that is plugged
+in starts charging.
 
 ## Device triggers
 

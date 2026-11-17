@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -20,9 +20,15 @@ from .tuya_ev_charger import EVMetrics, TuyaEVChargerClient
 
 LOGGER = logging.getLogger(__name__)
 
-# While the auto-start lock is on, poll at least this often so a charge the car
-# started by itself on plug-in is caught (and stopped) within seconds.
+# While the auto-start lock is on, poll at least this often so a charge that
+# slips through anyway is caught (and stopped) within seconds.
 AUTOSTART_LOCK_POLL_INTERVAL = timedelta(seconds=10)
+# The lock parks the charger in scheduled mode with a one-minute window that
+# never comes round: placed this far ahead, and moved again once it gets closer
+# than the margin. The wide margin also covers a charger clock that does not
+# match Home Assistant's (time zone, DST).
+DEAD_WINDOW_AHEAD = timedelta(hours=12)
+DEAD_WINDOW_MARGIN = timedelta(hours=6)
 # Raw DP 109 states that mean no car is connected: a later plug-in starts a new
 # session, so any earlier start request no longer applies.
 _NO_VEHICLE_STATES = frozenset({"SLEEP", "IDLE"})
@@ -47,26 +53,59 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         self.last_discovery: dict | None = None
         self._last_rediscovery_at: float = 0.0
         self._base_update_interval = update_interval
-        # Auto-start lock: the charger has no working setting to stay idle on
-        # plug-in, so a charge nobody asked for is stopped here instead.
+        # Auto-start lock: the charger ignores the DPs meant to keep it idle on
+        # plug-in, but it does wait for its schedule window - and only charges
+        # on request once scheduled mode is switched off.
         self.autostart_locked = False
         self._charge_requested = False
 
-    def set_autostart_locked(self, locked: bool) -> None:
+    def restore_autostart_lock(self, locked: bool) -> None:
+        """Set the lock from the restored switch state, without touching the charger."""
         self.autostart_locked = locked
+        self._apply_poll_interval()
+
+    async def async_set_autostart_locked(self, locked: bool) -> None:
+        self.autostart_locked = locked
+        self._apply_poll_interval()
+        if not locked:
+            # Back to the charger's default: charge as soon as a car is plugged in.
+            await self._async_set_schedule_enabled(False)
+
+    def _apply_poll_interval(self) -> None:
         self.update_interval = (
             min(self._base_update_interval, AUTOSTART_LOCK_POLL_INTERVAL)
-            if locked
+            if self.autostart_locked
             else self._base_update_interval
         )
 
-    def request_charge(self, requested: bool) -> None:
-        """Record that a session was started (or stopped) on purpose.
+    async def async_set_charging(self, enabled: bool) -> bool:
+        """Start or stop a session on purpose (switch.charge_session).
 
-        Called by switch.charge_session before it sends the command, so the
-        lock never stops a charge the user or an automation asked for.
+        With the lock on, the charger only charges once scheduled mode is off,
+        so a start releases the schedule and a stop parks it again.
         """
-        self._charge_requested = requested
+        # Before the commands, so a poll landing in between does not take this
+        # start for one the car made by itself.
+        self._charge_requested = enabled
+        if enabled and self.autostart_locked:
+            if not await self._async_set_schedule_enabled(False):
+                return False
+        ok = await self.client.async_set_charge_enabled(enabled)
+        if not enabled and self.autostart_locked:
+            ok = await self._async_arm_dead_window() or ok
+        return ok
+
+    async def _async_set_schedule_enabled(self, enabled: bool) -> bool:
+        data = self.data
+        start = (data.schedule_start if data else None) or "00:00"
+        end = (data.schedule_end if data else None) or "00:00"
+        return await self.client.async_set_schedule(enabled, start, end)
+
+    async def _async_arm_dead_window(self) -> bool:
+        start = dt_util.now() + DEAD_WINDOW_AHEAD
+        end = start + timedelta(minutes=1)
+        LOGGER.debug("Auto-start lock: parking the schedule at %s.", _hhmm(start))
+        return await self.client.async_set_schedule(True, _hhmm(start), _hhmm(end))
 
     async def _async_update_data(self) -> EVMetrics:
         metrics = await self._async_poll()
@@ -77,20 +116,28 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         )
 
     async def _async_enforce_autostart_lock(self, metrics: EVMetrics) -> EVMetrics:
-        """Stop a charge the car started on its own while the lock is on."""
+        """Keep the charger parked in scheduled mode while the lock is on."""
         if metrics.work_state_debug in _NO_VEHICLE_STATES:
             self._charge_requested = False
-        if not self.autostart_locked or self._charge_requested:
+        if not self.autostart_locked:
             return metrics
         charging = metrics.work_state_debug == "WORKING" or metrics.do_charge is True
-        if not charging or _in_schedule_window(metrics):
+        if charging and not metrics.schedule_enabled:
+            # Only a released schedule lets it charge, so this one was asked
+            # for - including one running across a Home Assistant restart.
+            self._charge_requested = True
+        if self._charge_requested:
             return metrics
 
-        LOGGER.info(
-            "Charge started without a request while the auto-start lock is on; stopping it."
-        )
-        if not await self.client.async_set_charge_enabled(False):
-            LOGGER.warning("Auto-start lock could not stop the charge; retrying on the next poll.")
+        if charging:
+            # Parked but charging anyway (e.g. the window came round while Home
+            # Assistant was down): stop it and park again.
+            LOGGER.info("Charge started while the auto-start lock is on; stopping it.")
+            await self.client.async_set_charge_enabled(False)
+            await self._async_arm_dead_window()
+        elif _dead_window_needs_moving(metrics):
+            await self._async_arm_dead_window()
+        else:
             return metrics
         return await self._async_fetch_metrics() or metrics
 
@@ -194,25 +241,27 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         return {"ip": host}
 
 
-def _in_schedule_window(metrics: EVMetrics) -> bool:
-    """Whether the charger's own schedule (DP 151) is active right now.
 
-    A charge inside the window is one the user set up, so the lock lets it run.
-    """
+def _dead_window_needs_moving(metrics: EVMetrics) -> bool:
+    """Whether the schedule is off, not ours, or the window is getting close."""
     if not metrics.schedule_enabled or not metrics.schedule_start or not metrics.schedule_end:
-        return False
+        return True
     try:
         start = _minutes(metrics.schedule_start)
         end = _minutes(metrics.schedule_end)
     except ValueError:
-        return False
+        return True
+    if (end - start) % (24 * 60) != 1:
+        return True
     now = dt_util.now()
-    current = now.hour * 60 + now.minute
-    if start <= end:
-        return start <= current < end
-    return current >= start or current < end  # window across midnight
+    until_start = (start - (now.hour * 60 + now.minute)) % (24 * 60)
+    return until_start < DEAD_WINDOW_MARGIN.total_seconds() / 60
 
 
 def _minutes(hhmm: str) -> int:
     hours, minutes = hhmm.split(":")
     return int(hours) * 60 + int(minutes)
+
+
+def _hhmm(moment: datetime) -> str:
+    return f"{moment.hour:02d}:{moment.minute:02d}"

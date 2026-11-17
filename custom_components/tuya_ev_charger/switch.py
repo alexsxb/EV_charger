@@ -91,10 +91,7 @@ class TuyaEVChargerChargeSessionSwitch(TuyaEVChargerEntity, SwitchEntity):
         await self._async_set_charging(False)
 
     async def _async_set_charging(self, enabled: bool) -> None:
-        # Before the command, so a poll landing in between does not take this
-        # start for one the car made by itself.
-        self.coordinator.request_charge(enabled)
-        if not await self._runtime_data.client.async_set_charge_enabled(enabled):
+        if not await self.coordinator.async_set_charging(enabled):
             raise HomeAssistantError(
                 "Unable to start charging session."
                 if enabled
@@ -166,13 +163,13 @@ class TuyaEVChargerScheduleSwitch(TuyaEVChargerEntity, SwitchEntity):
 
 
 class TuyaEVChargerAutostartLockSwitch(TuyaEVChargerEntity, SwitchEntity, RestoreEntity):
-    """Stop the charger from charging on its own when a car is plugged in.
+    """Keep the charger from charging on its own when a car is plugged in.
 
-    The charger starts a session on plug-in and its firmware ignores the DPs
-    meant to change that, so the lock stops any charge nobody asked for. A
-    start through switch.charge_session (manual or automation) or inside the
-    charger's own schedule window is let through. Only acts while Home
-    Assistant is running; the charger may charge for one poll before it stops.
+    The firmware ignores the DPs meant for this, but it waits for its schedule
+    window. While on, the charger is parked in scheduled mode with a one-minute
+    window that never comes round; switch.charge_session releases it for a
+    session. Enforced by the charger itself, so it also holds while Home
+    Assistant is down. The schedule entities are managed by the lock meanwhile.
     """
 
     _attr_translation_key = "autostart_lock"
@@ -187,7 +184,7 @@ class TuyaEVChargerAutostartLockSwitch(TuyaEVChargerEntity, SwitchEntity, Restor
         await super().async_added_to_hass()
         last_state = await self.async_get_last_state()
         if last_state is not None:
-            self.coordinator.set_autostart_locked(last_state.state == "on")
+            self.coordinator.restore_autostart_lock(last_state.state == "on")
 
     @property
     def available(self) -> bool:
@@ -199,10 +196,11 @@ class TuyaEVChargerAutostartLockSwitch(TuyaEVChargerEntity, SwitchEntity, Restor
         return self.coordinator.autostart_locked
 
     async def async_turn_on(self, **kwargs: object) -> None:
-        self.coordinator.set_autostart_locked(True)
+        await self.coordinator.async_set_autostart_locked(True)
         self.async_write_ha_state()
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: object) -> None:
-        self.coordinator.set_autostart_locked(False)
+        await self.coordinator.async_set_autostart_locked(False)
         self.async_write_ha_state()
+        await self.coordinator.async_request_refresh()
