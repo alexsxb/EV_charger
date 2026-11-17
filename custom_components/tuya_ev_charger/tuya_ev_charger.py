@@ -31,7 +31,6 @@ from .const import (
     DP_REBOOT,
     DP_SCHEDULE,
     DP_SELFTEST,
-    DP_SOCKET_CFG,
     DP_WORK_STATE,
     DP_WORK_STATE_DEBUG,
 )
@@ -55,10 +54,6 @@ SOCKET_RETRY_DELAY_S = 1
 # charger; it only exists so a thread stuck inside tinytuya cannot hold the I/O
 # lock, and with it every poll and command, forever.
 IO_TIMEOUT_S = 20
-
-# DP 154 (socket_cfg): what the charger does when a cable is plugged in.
-PLUG_IN_ACTION_MAP: dict[int, str] = {0: "prompt", 1: "charge", 2: "idle"}
-PLUG_IN_ACTION_OPTIONS: tuple[str, ...] = tuple(PLUG_IN_ACTION_MAP.values())
 
 
 def _configure_device(device: tinytuya.Device) -> None:
@@ -85,7 +80,6 @@ class DPProfile:
     product_variant: str
     dp_num: str
     reboot: str
-    plug_in_action: str
 
 
 DP_PROFILE_MAP: dict[str, DPProfile] = {
@@ -106,7 +100,6 @@ DP_PROFILE_MAP: dict[str, DPProfile] = {
         product_variant=DP_PRODUCT_VARIANT,
         dp_num=DP_NUM,
         reboot=DP_REBOOT,
-        plug_in_action=DP_SOCKET_CFG,
     ),
     # Generic profile currently mirrors depow_v2 mappings and is meant as
     # an extension point for additional charger firmwares.
@@ -127,7 +120,6 @@ DP_PROFILE_MAP: dict[str, DPProfile] = {
         product_variant=DP_PRODUCT_VARIANT,
         dp_num=DP_NUM,
         reboot=DP_REBOOT,
-        plug_in_action=DP_SOCKET_CFG,
     ),
 }
 
@@ -161,7 +153,6 @@ class EVMetrics:
     current_target: int | None
     max_current_cfg: int | None
     nfc_enabled: bool | None
-    plug_in_action: str | None
     downcounter: int | None
     selftest: str | None
     alarm: str | None
@@ -305,17 +296,6 @@ class TuyaEVChargerClient:
     async def async_set_charge_enabled(self, enabled: bool) -> bool:
         return await self._async_send_command(self._dp.do_charge, enabled)
 
-    async def async_set_plug_in_action(self, action: str) -> bool:
-        """Choose what the charger does when a cable is plugged in.
-
-        "idle" stops the car auto-starting a charge; the session is then
-        started on demand (switch.charge_session or the schedule).
-        """
-        for raw_value, name in PLUG_IN_ACTION_MAP.items():
-            if name == action:
-                return await self._async_send_command(self._dp.plug_in_action, raw_value)
-        raise ValueError(f"Unsupported plug-in action '{action}'.")
-
     async def async_set_nfc_enabled(self, enabled: bool) -> bool:
         return await self._async_send_command(self._dp.nfc_cfg, enabled)
 
@@ -371,9 +351,6 @@ class TuyaEVChargerClient:
             current_target=_coerce_optional_int(dps.get(self._dp.current_target)),
             max_current_cfg=_coerce_optional_int(dps.get(self._dp.max_current_cfg)),
             nfc_enabled=_coerce_optional_bool(dps.get(self._dp.nfc_cfg)),
-            plug_in_action=PLUG_IN_ACTION_MAP.get(
-                _coerce_optional_int(dps.get(self._dp.plug_in_action))
-            ),
             downcounter=_coerce_optional_int(dps.get(self._dp.downcounter)),
             selftest=_coerce_optional_text(dps.get(self._dp.selftest)),
             alarm=_coerce_optional_json_text(dps.get(self._dp.alarm)),

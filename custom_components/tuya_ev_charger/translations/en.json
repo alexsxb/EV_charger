@@ -130,6 +130,9 @@
       },
       "schedule_enabled": {
         "name": "Scheduled charging"
+      },
+      "autostart_lock": {
+        "name": "Auto-start lock"
       }
     },
     "time": {
@@ -143,14 +146,6 @@
     "select": {
       "charge_current_preset": {
         "name": "Current setpoint (presets)"
-      },
-      "plug_in_action": {
-        "name": "Plug-in action",
-        "state": {
-          "prompt": "Prompt",
-          "charge": "Start charging",
-          "idle": "Do nothing"
-        }
       }
     }
   },

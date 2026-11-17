@@ -8,6 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import TuyaEVChargerRuntimeData
 from .const import (
@@ -15,7 +16,7 @@ from .const import (
     CARD_ROLE_INDEX,
     CARD_ROLE_SCHEDULE_ENABLED,
 )
-from .entity import TuyaEVChargerEntity
+from .entity import TuyaEVChargerEntity, TuyaEVChargerScheduleEntity
 
 # A charger without DP 140 reports only its operating state, and after a start
 # command it steps PAUSE -> IDLEINS -> WORKING over several seconds. Hold the
@@ -37,6 +38,7 @@ async def async_setup_entry(
             TuyaEVChargerChargeSessionSwitch(entry, runtime_data),
             TuyaEVChargerNfcSwitch(entry, runtime_data),
             TuyaEVChargerScheduleSwitch(entry, runtime_data),
+            TuyaEVChargerAutostartLockSwitch(entry, runtime_data),
         ]
     )
 
@@ -89,7 +91,7 @@ class TuyaEVChargerChargeSessionSwitch(TuyaEVChargerEntity, SwitchEntity):
         await self._async_set_charging(False)
 
     async def _async_set_charging(self, enabled: bool) -> None:
-        if not await self._runtime_data.client.async_set_charge_enabled(enabled):
+        if not await self.coordinator.async_set_charging(enabled):
             raise HomeAssistantError(
                 "Unable to start charging session."
                 if enabled
@@ -127,7 +129,7 @@ class TuyaEVChargerNfcSwitch(TuyaEVChargerEntity, SwitchEntity):
         await self.coordinator.async_request_refresh()
 
 
-class TuyaEVChargerScheduleSwitch(TuyaEVChargerEntity, SwitchEntity):
+class TuyaEVChargerScheduleSwitch(TuyaEVChargerScheduleEntity, SwitchEntity):
     _attr_translation_key = "schedule_enabled"
     _attr_icon = "mdi:clock-outline"
 
@@ -157,4 +159,48 @@ class TuyaEVChargerScheduleSwitch(TuyaEVChargerEntity, SwitchEntity):
         end = (data.schedule_end if data else None) or "00:00"
         if not await self._runtime_data.client.async_set_schedule(enabled, start, end):
             raise HomeAssistantError("Unable to update charging schedule.")
+        await self.coordinator.async_request_refresh()
+
+
+class TuyaEVChargerAutostartLockSwitch(TuyaEVChargerEntity, SwitchEntity, RestoreEntity):
+    """Keep the charger from charging on its own when a car is plugged in.
+
+    The firmware ignores the DPs meant for this, but it waits for its schedule
+    window. While on, the charger is parked in scheduled mode with a one-minute
+    window that never comes round; switch.charge_session releases it for a
+    session. Enforced by the charger itself, so it also holds while Home
+    Assistant is down. The schedule entities are unavailable meanwhile.
+    """
+
+    _attr_translation_key = "autostart_lock"
+    _attr_icon = "mdi:lock-clock"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, entry: ConfigEntry, runtime_data: TuyaEVChargerRuntimeData) -> None:
+        super().__init__(entry=entry, runtime_data=runtime_data)
+        self._attr_unique_id = f"{runtime_data.client.device_id}_autostart_lock"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None:
+            self.coordinator.restore_autostart_lock(last_state.state == "on")
+
+    @property
+    def available(self) -> bool:
+        # A setting of this integration, not of the charger: always settable.
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.autostart_locked
+
+    async def async_turn_on(self, **kwargs: object) -> None:
+        await self.coordinator.async_set_autostart_locked(True)
+        self.async_write_ha_state()
+        await self.coordinator.async_request_refresh()
+
+    async def async_turn_off(self, **kwargs: object) -> None:
+        await self.coordinator.async_set_autostart_locked(False)
+        self.async_write_ha_state()
         await self.coordinator.async_request_refresh()

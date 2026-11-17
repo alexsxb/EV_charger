@@ -47,10 +47,9 @@ Notes:
 
 ## Exposed entities
 
-- `switch`: charging session, NFC, scheduled charging
+- `switch`: charging session, NFC, scheduled charging, auto-start lock
 - `number`: current setpoint
 - `select`: current setpoint (presets, only values the charger accepts)
-- `select`: plug-in action (what the charger does when a cable is plugged in)
 - `time`: schedule start / end
 - `sensor`: voltage, current and power (L1), temperature, status, work state,
   session duration / energy, last session duration / energy, plus diagnostics
@@ -60,14 +59,29 @@ Notes:
 L1 current and power read 0 whenever the charger is not charging (some
 firmwares keep echoing the last value); voltage stays live.
 
-## Stop auto-charging on plug-in
+## Auto-start lock
 
-By default the charger starts charging as soon as a car is plugged in. Set
-`select.plug_in_action` to **Do nothing** and it waits instead; start the
-session with `switch.charge_session` (manually or from an automation) or with
-the charging schedule. The setting is stored on the charger itself, so it also
-holds while Home Assistant is offline. The select is unavailable on firmwares
-that do not report DP 154.
+The charger starts charging as soon as a car is plugged in, and its firmware
+ignores the settings meant to change that (DP 154 `x_socket_cfg`, DP 190
+`x_plug_charge` - tested on firmware 1.9.7). It does, however, wait for its
+own schedule: in scheduled mode it only charges inside the window, and a
+manual start does not override that.
+
+`switch.autostart_lock` uses this. While on:
+
+- the charger is parked in scheduled mode with a one-minute window about 12 h
+  ahead, moved again once it gets closer than 6 h - so it never comes round
+- `switch.charge_session` on switches scheduled mode off, and the charger
+  starts; off (or unplugging the car) parks it again
+- the schedule entities (`switch.scheduled_charging`, schedule start/end) are
+  managed by the lock and show as unavailable; time-based charging belongs in
+  Home Assistant (e.g. a scheduler driving `switch.charge_session`)
+
+Because the charger enforces the schedule itself, the lock also holds while
+Home Assistant is down (the window is only moved while it runs; if it is down
+for more than ~6 h the charger may charge for one minute when the window comes
+round). Turning the lock off switches scheduled mode off: a car that is plugged
+in starts charging.
 
 ## Device triggers
 

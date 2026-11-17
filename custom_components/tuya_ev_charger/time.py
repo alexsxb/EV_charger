@@ -14,7 +14,7 @@ from .const import (
     CARD_ROLE_SCHEDULE_END,
     CARD_ROLE_SCHEDULE_START,
 )
-from .entity import TuyaEVChargerEntity
+from .entity import TuyaEVChargerScheduleEntity
 
 
 async def async_setup_entry(
@@ -46,7 +46,7 @@ def _format_time(t: time) -> str:
     return f"{t.hour:02d}:{t.minute:02d}"
 
 
-class TuyaEVChargerScheduleStartTime(TuyaEVChargerEntity, TimeEntity):
+class TuyaEVChargerScheduleStartTime(TuyaEVChargerScheduleEntity, TimeEntity):
     _attr_translation_key = "schedule_start"
     _attr_icon = "mdi:clock-start"
 
@@ -73,7 +73,7 @@ class TuyaEVChargerScheduleStartTime(TuyaEVChargerEntity, TimeEntity):
         await self.coordinator.async_request_refresh()
 
 
-class TuyaEVChargerScheduleEndTime(TuyaEVChargerEntity, TimeEntity):
+class TuyaEVChargerScheduleEndTime(TuyaEVChargerScheduleEntity, TimeEntity):
     _attr_translation_key = "schedule_end"
     _attr_icon = "mdi:clock-end"
 
