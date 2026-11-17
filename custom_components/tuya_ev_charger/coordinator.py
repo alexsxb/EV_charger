@@ -63,10 +63,13 @@ class TuyaEVChargerDataUpdateCoordinator(DataUpdateCoordinator[EVMetrics]):
         """Set the lock from the restored switch state, without touching the charger."""
         self.autostart_locked = locked
         self._apply_poll_interval()
+        # The schedule entities' availability follows the lock.
+        self.async_update_listeners()
 
     async def async_set_autostart_locked(self, locked: bool) -> None:
         self.autostart_locked = locked
         self._apply_poll_interval()
+        self.async_update_listeners()
         if not locked:
             # Back to the charger's default: charge as soon as a car is plugged in.
             await self._async_set_schedule_enabled(False)

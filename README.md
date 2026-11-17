@@ -74,8 +74,8 @@ manual start does not override that.
 - `switch.charge_session` on switches scheduled mode off, and the charger
   starts; off (or unplugging the car) parks it again
 - the schedule entities (`switch.scheduled_charging`, schedule start/end) are
-  managed by the lock; time-based charging belongs in Home Assistant (e.g. a
-  scheduler driving `switch.charge_session`)
+  managed by the lock and show as unavailable; time-based charging belongs in
+  Home Assistant (e.g. a scheduler driving `switch.charge_session`)
 
 Because the charger enforces the schedule itself, the lock also holds while
 Home Assistant is down (the window is only moved while it runs; if it is down

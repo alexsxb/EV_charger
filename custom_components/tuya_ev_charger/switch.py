@@ -16,7 +16,7 @@ from .const import (
     CARD_ROLE_INDEX,
     CARD_ROLE_SCHEDULE_ENABLED,
 )
-from .entity import TuyaEVChargerEntity
+from .entity import TuyaEVChargerEntity, TuyaEVChargerScheduleEntity
 
 # A charger without DP 140 reports only its operating state, and after a start
 # command it steps PAUSE -> IDLEINS -> WORKING over several seconds. Hold the
@@ -129,7 +129,7 @@ class TuyaEVChargerNfcSwitch(TuyaEVChargerEntity, SwitchEntity):
         await self.coordinator.async_request_refresh()
 
 
-class TuyaEVChargerScheduleSwitch(TuyaEVChargerEntity, SwitchEntity):
+class TuyaEVChargerScheduleSwitch(TuyaEVChargerScheduleEntity, SwitchEntity):
     _attr_translation_key = "schedule_enabled"
     _attr_icon = "mdi:clock-outline"
 
@@ -169,7 +169,7 @@ class TuyaEVChargerAutostartLockSwitch(TuyaEVChargerEntity, SwitchEntity, Restor
     window. While on, the charger is parked in scheduled mode with a one-minute
     window that never comes round; switch.charge_session releases it for a
     session. Enforced by the charger itself, so it also holds while Home
-    Assistant is down. The schedule entities are managed by the lock meanwhile.
+    Assistant is down. The schedule entities are unavailable meanwhile.
     """
 
     _attr_translation_key = "autostart_lock"

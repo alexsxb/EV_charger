@@ -119,3 +119,15 @@ def _first_non_empty(data: dict[str, Any], keys: tuple[str, ...]) -> str | None:
 def _normalize_token(raw: str) -> str:
     lowered = raw.strip().lower()
     return re.sub(r"[^a-z0-9_]", "_", lowered).strip("_")
+
+
+class TuyaEVChargerScheduleEntity(TuyaEVChargerEntity):
+    """Base for the charger-schedule entities (DP 151).
+
+    Unavailable while the auto-start lock is on: the lock owns the schedule
+    then, and a manual change would only be overwritten on the next poll.
+    """
+
+    @property
+    def available(self) -> bool:
+        return super().available and not self.coordinator.autostart_locked
