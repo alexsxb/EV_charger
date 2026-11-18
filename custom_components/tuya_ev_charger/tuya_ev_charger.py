@@ -36,9 +36,12 @@ from .const import (
 )
 
 LOGGER = logging.getLogger(__name__)
-# DP 101 reads 300 while charging (200 ready, 204 paused). Once its display
-# goes dark the charger freezes DP 109 on SLEEP - for hours, through a whole
-# charge - while DP 101 keeps tracking the real state (upstream #57).
+# DP 101 reads 300 while charging (200 ready, 202 waiting, 204 paused). DP 109
+# does not reliably follow it: once the display goes dark the charger freezes
+# it on SLEEP - for hours, through a whole charge (upstream #57) - and with the
+# auto-start lock (scheduled mode) it stays on WAIT through a charge started on
+# request. DP 101 keeps tracking the real state, so 300 means charging whatever
+# DP 109 says.
 WORK_STATE_CODE_CHARGING = 300
 # DP 106 "cp": the IEC 61851 control-pilot voltage. 12 V = no vehicle (A),
 # 9 V = vehicle connected (B), 6 V = charging (C).
@@ -344,11 +347,10 @@ class TuyaEVChargerClient:
         work_state_debug = _coerce_optional_text(dps.get(self._dp.work_state_debug)) or "UNKNOWN"
         work_state_debug = work_state_debug.strip().upper()
         work_state = _coerce_optional_int(dps.get(self._dp.work_state))
-        # DP 109 frozen while the display is dark: DP 101 says charging. Only
-        # SLEEP is overridden - DP 101 moves to 204 as soon as a charge pauses.
-        asleep_but_charging = (
-            work_state_debug == "SLEEP" and work_state == WORK_STATE_CODE_CHARGING
-        )
+        # DP 109 can lag or freeze (SLEEP with the display dark, WAIT under the
+        # auto-start lock) while DP 101 says charging. DP 101 moves off 300 as
+        # soon as a charge pauses or ends, so it is safe to trust on its own.
+        charging_by_code = work_state == WORK_STATE_CODE_CHARGING
 
         do_charge = _coerce_optional_bool(dps.get(self._dp.do_charge))
 
@@ -358,7 +360,7 @@ class TuyaEVChargerClient:
         # current/power while actually charging. Voltage stays live: the AC line
         # is still there. A model that reports DP 140 counts as charging when it
         # says so, even if its DP 109 string is not one we map.
-        charging = work_state_debug == "WORKING" or do_charge is True or asleep_but_charging
+        charging = work_state_debug == "WORKING" or do_charge is True or charging_by_code
         l1_data = metrics_dict.get("L1", [0, 0, 0])
         if not isinstance(l1_data, list) or len(l1_data) < 3:
             l1_data = [0, 0, 0]
@@ -375,7 +377,7 @@ class TuyaEVChargerClient:
             work_state=work_state,
             work_state_debug=work_state_debug,
             status=(
-                STATUS_MAP["WORKING"] if asleep_but_charging else STATUS_MAP.get(work_state_debug)
+                STATUS_MAP["WORKING"] if charging_by_code else STATUS_MAP.get(work_state_debug)
             ),
             charging=charging,
             do_charge=do_charge,
