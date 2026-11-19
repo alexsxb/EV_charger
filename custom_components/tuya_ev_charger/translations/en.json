@@ -44,6 +44,7 @@
         "description": "Connection and DP mapping options.",
         "data": {
           "scan_interval": "Refresh interval (seconds)",
+          "persistent_connection": "Persistent local connection (like the Tuya app: DPs pushed live; the app cannot connect locally meanwhile)",
           "charger_profile": "Charger profile / DP mapping",
           "charger_profile_json": "Custom DP mapping (JSON, optional)"
         }
