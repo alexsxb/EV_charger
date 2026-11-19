@@ -30,6 +30,7 @@
         "description": "Options de connexion et de mapping DP.",
         "data": {
           "scan_interval": "Intervalle de rafraichissement (secondes)",
+          "persistent_connection": "Connexion locale permanente (comme l'app Tuya : DP recus en direct ; l'app ne peut plus se connecter en local)",
           "charger_profile": "Profil chargeur / mapping DP",
           "charger_profile_json": "Mapping DP custom (JSON, optionnel)"
         }

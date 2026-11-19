@@ -42,7 +42,14 @@ async def async_get_config_entry_diagnostics(
             "data": dict(entry.data),
             "options": dict(entry.options),
         },
-        "client": {"dp_profile": profile},
+        "client": {
+            "dp_profile": profile,
+            "persistent_connection": runtime_data.client.persistent_connection
+            if runtime_data is not None
+            else None,
+            "push_count": runtime_data.client.push_count if runtime_data is not None else None,
+            "last_push_ts": runtime_data.client.last_push_ts if runtime_data is not None else None,
+        },
         "coordinator_data": coordinator_data,
         "raw_dps": raw_dps,
     }

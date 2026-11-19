@@ -12,6 +12,8 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.device_registry import format_mac
 
 from .const import (
+    CONF_PERSISTENT_CONNECTION,
+    DEFAULT_PERSISTENT_CONNECTION,
     CHARGER_PROFILES,
     CONF_CHARGER_PROFILE,
     CONF_CHARGER_PROFILE_JSON,
@@ -74,6 +76,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         protocol_version=entry.data[CONF_PROTOCOL_VERSION],
         charger_profile=_charger_profile(entry),
         charger_profile_json=_charger_profile_json(entry),
+        persistent_connection=bool(
+            entry.options.get(CONF_PERSISTENT_CONNECTION, DEFAULT_PERSISTENT_CONNECTION)
+        ),
     )
 
     try:
@@ -102,6 +107,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Persist any relocated IP and learn the MAC (used by DHCP auto-discovery).
     # Done before the update listener is registered so it does not trigger a reload.
     await _async_reconcile_network_info(hass, entry, coordinator)
+
+    if client.persistent_connection:
+        # A pushed DP report (listener thread) asks for a debounced refresh, so
+        # entities follow the charger without waiting for the next poll.
+        def _on_push() -> None:
+            hass.loop.call_soon_threadsafe(
+                lambda: hass.async_create_task(coordinator.async_request_refresh())
+            )
+
+        client.on_push = _on_push
+        entry.async_on_unload(client.async_close)
 
     runtime_data = TuyaEVChargerRuntimeData(client=client, coordinator=coordinator)
     entry.runtime_data = runtime_data

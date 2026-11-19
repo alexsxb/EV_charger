@@ -20,6 +20,7 @@ from .const import (
     CONF_DEVICE_ID,
     CONF_LOCAL_KEY,
     CONF_MAC,
+    CONF_PERSISTENT_CONNECTION,
     CONF_PROTOCOL_VERSION,
     CONF_SCAN_INTERVAL,
     DEFAULT_CHARGER_PROFILE,
@@ -301,6 +302,10 @@ class TuyaEVChargerOptionsFlow(config_entries.OptionsFlow):
                             CHARGER_PROFILES,
                         ),
                     ): vol.In(CHARGER_PROFILES),
+                    vol.Required(
+                        CONF_PERSISTENT_CONNECTION,
+                        default=bool(options.get(CONF_PERSISTENT_CONNECTION, False)),
+                    ): bool,
                     vol.Optional(
                         CONF_CHARGER_PROFILE_JSON,
                         default=charger_profile_json,
